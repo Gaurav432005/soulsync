@@ -1,32 +1,30 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Play, X, PlusCircle, Check, ListMusic, User } from 'lucide-react';
+import { Search, Play, X, PlusCircle, Check, ListMusic, User, Trash2 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
-import { addDoc, collection, serverTimestamp, query, orderBy, getDocs } from 'firebase/firestore';
+import { addDoc, deleteDoc, doc, collection, serverTimestamp, query, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { toast } from 'react-hot-toast';
 
 const Home = () => {
-  const { playSong, queue, currentSong } = usePlayer(); // Get queue from context
+  const { playSong, queue, currentSong } = usePlayer(); 
   const { currentUser } = useAuth();
   
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState([]); 
   const [myFeed, setMyFeed] = useState([]); 
   const [loading, setLoading] = useState(false);
-  const [addingId, setAddingId] = useState(null);
+  const [processingId, setProcessingId] = useState(null); // Used for loading state of Add/Remove
 
-  // TABS: 'library' or 'queue'
   const [activeTab, setActiveTab] = useState('library');
 
-  // Auto-switch to Queue tab if playing from World (Queue exists & is not just 1 song)
   useEffect(() => {
     if (queue.length > 1) {
         setActiveTab('queue');
     }
   }, [queue.length]);
 
- const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY;
+  const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY; 
 
   // Fetch Library
   useEffect(() => {
@@ -68,7 +66,6 @@ const Home = () => {
         }));
       setResults(formattedResults);
     } catch (error) {
-      // Mock Data Fallback
       setTimeout(() => {
         setResults([
           { id: "jfKfPfyJRdk", title: "lofi hip hop radio", author: "Lofi Girl", thumbnail: "https://img.youtube.com/vi/jfKfPfyJRdk/default.jpg" },
@@ -79,22 +76,56 @@ const Home = () => {
     }
   };
 
+  // --- ADD SONG ---
   const addToLibrary = async (song) => {
-    setAddingId(song.id);
+    setProcessingId(song.id);
+    const toastId = toast.loading("Adding...");
     try {
-      await addDoc(collection(db, "users", currentUser.uid, "favourites"), {
+      // Create new doc
+      const docRef = await addDoc(collection(db, "users", currentUser.uid, "favourites"), {
         youtubeId: song.id,
         title: song.title,
         thumbnail: song.thumbnail,
         author: song.author,
         createdAt: serverTimestamp()
       });
-      setMyFeed(prev => [{...song, youtubeId: song.id, createdAt: new Date()}, ...prev]);
-      toast.success("Added to library");
+      
+      // Update local state immediately
+      setMyFeed(prev => [{...song, youtubeId: song.id, id: docRef.id, createdAt: new Date()}, ...prev]);
+      toast.success("Added to library", { id: toastId });
     } catch (error) {
-      toast.error("Failed to add song");
+      toast.error("Failed to add song", { id: toastId });
     }
-    setAddingId(null);
+    setProcessingId(null);
+  };
+
+  // --- REMOVE SONG ---
+  const removeFromLibrary = async (songId, youtubeId) => {
+    // We need the Firestore Document ID to delete.
+    // If passed from Search Results, we might only have youtubeId, so we find the docId.
+    let docId = songId;
+    
+    if (!docId && youtubeId) {
+        const foundSong = myFeed.find(s => s.youtubeId === youtubeId);
+        if (foundSong) docId = foundSong.id;
+    }
+
+    if (!docId) return;
+
+    setProcessingId(docId); // Show loading
+    const toastId = toast.loading("Removing...");
+    
+    try {
+        await deleteDoc(doc(db, "users", currentUser.uid, "favourites", docId));
+        
+        // Remove from local state
+        setMyFeed(prev => prev.filter(s => s.id !== docId));
+        toast.success("Removed from library", { id: toastId });
+    } catch (error) {
+        console.error(error);
+        toast.error("Failed to remove", { id: toastId });
+    }
+    setProcessingId(null);
   };
 
   const clearSearch = () => {
@@ -104,13 +135,12 @@ const Home = () => {
 
   const getFirstName = () => currentUser?.displayName ? currentUser.displayName.split(' ')[0] : 'Soul';
 
-  // Decide which list to show
   const displayList = activeTab === 'queue' ? queue : myFeed;
 
   return (
     <div className="h-full flex flex-col bg-white">
       
-      {/* 1. FIXED HEADER */}
+      {/* HEADER */}
       <div className="shrink-0 p-4 md:p-8 pb-2 z-10 bg-white border-b border-gray-50">
         <div className="max-w-4xl mx-auto flex flex-col gap-4">
           <div className="flex items-center justify-between">
@@ -118,20 +148,19 @@ const Home = () => {
               Hi, {getFirstName()} 👋
             </h1>
             
-            {/* TAB SWITCHER */}
             <div className="flex bg-gray-100 p-1 rounded-full">
                 <button 
                     onClick={() => setActiveTab('library')}
                     className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold transition-all ${activeTab === 'library' ? 'bg-white text-black shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
                 >
-                    <User size={14} /> Home
+                    <User size={14} /> Library
                 </button>
                 <button 
                     onClick={() => setActiveTab('queue')}
                     disabled={queue.length === 0}
                     className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold transition-all ${activeTab === 'queue' ? 'bg-white text-black shadow-sm' : 'text-gray-400 hover:text-gray-600 disabled:opacity-30'}`}
                 >
-                    <ListMusic size={14} /> world
+                    <ListMusic size={14} /> Now Playing
                 </button>
             </div>
           </div>
@@ -153,11 +182,11 @@ const Home = () => {
         </div>
       </div>
 
-      {/* 2. SCROLLABLE CONTENT AREA */}
+      {/* CONTENT */}
       <div className="flex-1 overflow-y-auto p-4 md:p-8 pt-2">
         <div className="max-w-4xl mx-auto pb-24">
             
-            {/* SEARCH RESULTS (Always show if searching) */}
+            {/* SEARCH RESULTS */}
             {(loading || results.length > 0) && (
                 <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-8">
                 <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
@@ -166,7 +195,11 @@ const Home = () => {
                 </div>
                 <div className="divide-y divide-gray-50">
                     {results.map((item) => {
+                    // Check if song is already in library
                     const isAlreadyAdded = myFeed.some(song => song.youtubeId === item.id);
+                    // Find Firestore ID if added
+                    const firestoreId = isAlreadyAdded ? myFeed.find(s => s.youtubeId === item.id)?.id : null;
+
                     return (
                         <div key={item.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 cursor-pointer group" onClick={() => playSong({ youtubeId: item.id, ...item })}>
                             <div className="relative w-12 h-12 shrink-0 rounded bg-gray-200 overflow-hidden">
@@ -177,12 +210,28 @@ const Home = () => {
                                 <h3 className="font-medium text-sm text-gray-900 truncate" dangerouslySetInnerHTML={{__html: item.title}} />
                                 <p className="text-xs text-gray-500 truncate">{item.author}</p>
                             </div>
+                            
+                            {/* TOGGLE ADD/REMOVE BUTTON */}
                             <button 
-                                onClick={(e) => { e.stopPropagation(); !isAlreadyAdded && addToLibrary(item); }}
-                                disabled={addingId === item.id || isAlreadyAdded}
-                                className={`shrink-0 text-xs px-3 py-1.5 rounded-full flex items-center gap-1 ${isAlreadyAdded ? "bg-green-100 text-green-700 font-bold" : "bg-black text-white"}`}
+                                onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    if(isAlreadyAdded) removeFromLibrary(firestoreId, item.id);
+                                    else addToLibrary(item);
+                                }}
+                                disabled={processingId === item.id || processingId === firestoreId}
+                                className={`shrink-0 text-xs px-3 py-1.5 rounded-full flex items-center gap-1 transition-all ${
+                                    isAlreadyAdded 
+                                    ? "bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-600 font-bold" 
+                                    : "bg-black text-white hover:opacity-80"
+                                }`}
                             >
-                                {isAlreadyAdded ? <><Check size={12}/> ADDED</> : (addingId === item.id ? "..." : "ADD")}
+                                {isAlreadyAdded ? (
+                                    // Hover pe text change karna complex hai React me bina extra state ke, 
+                                    // to simply Added dikhate hai, click pe remove hoga.
+                                    <><Check size={12}/> ADDED</>
+                                ) : (
+                                    (processingId === item.id) ? "..." : "ADD"
+                                )}
                             </button>
                         </div>
                     );
@@ -191,31 +240,26 @@ const Home = () => {
                 </div>
             )}
 
-            {/* LIST: EITHER LIBRARY OR QUEUE */}
+            {/* LIST: LIBRARY OR QUEUE */}
             {!loading && results.length === 0 && (
                 <div className="space-y-2">
-                    {/* Header Label */}
                     <div className="flex items-center justify-between px-2 mb-2">
                         <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
                             {activeTab === 'queue' ? 'Current Queue' : 'Your Collection'}
                         </h2>
                         {activeTab === 'queue' && (
-                            <span className="text-xs text-black font-medium bg-gray-100 px-2 py-0.5 rounded">
-                                Playing from World
-                            </span>
+                            <span className="text-xs text-black font-medium bg-gray-100 px-2 py-0.5 rounded">Playing from World</span>
                         )}
                     </div>
 
                     <div className="divide-y divide-gray-50 border-t border-gray-100">
-                       
 
                         {displayList.map((song, index) => {
-                            // Highlight currently playing song
                             const isCurrent = currentSong?.youtubeId === song.youtubeId;
                             
                             return (
                                 <div 
-                                    key={`${song.youtubeId}-${index}`} 
+                                    key={`${song.id}-${index}`} 
                                     onClick={() => playSong(song, displayList)} 
                                     className={`flex items-center gap-3 p-3 hover:bg-gray-50 cursor-pointer group rounded-xl transition-all ${isCurrent ? 'bg-purple-50 hover:bg-purple-100' : ''}`}
                                 >
@@ -233,14 +277,29 @@ const Home = () => {
                                         <p className="text-xs text-gray-500 truncate">{song.author}</p>
                                     </div>
 
-                                    {/* Small Equalizer Animation if playing */}
-                                    {isCurrent && (
-                                        <div className="flex gap-0.5 items-end h-3">
-                                            <div className="w-0.5 bg-purple-500 animate-[bounce_1s_infinite] h-2"></div>
-                                            <div className="w-0.5 bg-purple-500 animate-[bounce_1.2s_infinite] h-3"></div>
-                                            <div className="w-0.5 bg-purple-500 animate-[bounce_0.8s_infinite] h-1.5"></div>
-                                        </div>
-                                    )}
+                                    {/* ACTIONS AREA */}
+                                    <div className="flex items-center gap-2">
+                                        {isCurrent && (
+                                            <div className="flex gap-0.5 items-end h-3 mr-2">
+                                                <div className="w-0.5 bg-purple-500 animate-[bounce_1s_infinite] h-2"></div>
+                                                <div className="w-0.5 bg-purple-500 animate-[bounce_1.2s_infinite] h-3"></div>
+                                                <div className="w-0.5 bg-purple-500 animate-[bounce_0.8s_infinite] h-1.5"></div>
+                                            </div>
+                                        )}
+
+                                        {/* DELETE BUTTON (Only in Library Tab) */}
+                                        {activeTab === 'library' && (
+                                            <button 
+                                                onClick={(e) => { 
+                                                    e.stopPropagation(); 
+                                                    removeFromLibrary(song.id, song.youtubeId); 
+                                                }}
+                                                className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                             );
                         })}

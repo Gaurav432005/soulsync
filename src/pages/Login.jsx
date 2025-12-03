@@ -161,9 +161,6 @@ const Login = () => {
 
       </main>
 
-      <footer className="text-center py-6 text-gray-400 text-sm">
-        © 2025 SoulSync. Made with 🖤 by You.
-      </footer>
     </div>
   );
 };
