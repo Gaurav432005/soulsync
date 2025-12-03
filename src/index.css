@@ -1,0 +1,58 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap");
+
+@import "tailwindcss";
+
+@theme {
+  /* Custom Colors */
+  --color-primary: #8B5CF6; /* Violet */
+  --color-secondary: #EC4899; /* Pink */
+  --color-glass: rgba(255, 255, 255, 0.7);
+  --color-glass-border: rgba(255, 255, 255, 0.5);
+
+  /* Custom Backdrop Blur */
+  --backdrop-blur-xs: 2px;
+}
+
+*{
+  font-family: poppins;
+}
+/* ----------------------------- */
+/* OPTIONAL: Your Base Styles     */
+/* ----------------------------- */
+@layer base {
+  html, body {
+    @apply antialiased bg-white text-slate-800;
+    font-family: poppins;
+  }
+}
+
+/* ----------------------------- */
+/* OPTIONAL: Component Styles     */
+/* ----------------------------- */
+@layer components {
+  .glass-card {
+    @apply bg-glass border border-glass-border backdrop-blur-xs rounded-2xl;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-white font-semibold px-4 py-2 rounded-xl shadow-md 
+           hover:opacity-90 active:scale-95 transition;
+  }
+
+  .btn-secondary {
+    @apply bg-secondary text-white font-semibold px-4 py-2 rounded-xl shadow-md 
+           hover:opacity-90 active:scale-95 transition;
+  }
+}
+
+/* ----------------------------- */
+/* OPTIONAL: Utility Additions    */
+/* ----------------------------- */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+}
