@@ -1,6 +1,6 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Home, Globe, User } from "lucide-react";
+import { Home, Globe, User, Users } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
 const MobileNav = () => {
@@ -8,6 +8,7 @@ const MobileNav = () => {
 
   const navItems = [
     { icon: Home, label: "Home", path: "/" },
+    { icon: Users, label: "Friends", path: "/friends" },
     { icon: Globe, label: "World", path: "/world" },
     { 
       icon: User, 

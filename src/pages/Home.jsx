@@ -1,317 +1,503 @@
-import React, { useState, useEffect } from 'react';
-import { Search, Play, X, PlusCircle, Check, ListMusic, User, Trash2 } from 'lucide-react';
-import { usePlayer } from '../context/PlayerContext';
-import { useAuth } from '../context/AuthContext';
-import { addDoc, deleteDoc, doc, collection, serverTimestamp, query, orderBy, getDocs } from 'firebase/firestore';
-import { db } from '../firebase';
-import { toast } from 'react-hot-toast';
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Search,
+  Play,
+  Pause,
+  X,
+  Check,
+  Trash2,
+  ListMusic,
+} from "lucide-react";
+import { usePlayer } from "../context/PlayerContext";
+import { useAuth } from "../context/AuthContext";
+import {
+  addDoc,
+  deleteDoc,
+  doc,
+  collection,
+  serverTimestamp,
+  query,
+  orderBy,
+  onSnapshot,
+  getDocs,
+} from "firebase/firestore";
+import { db } from "../firebase";
+import { toast } from "react-hot-toast";
 
 const Home = () => {
-  const { playSong, queue, currentSong } = usePlayer(); 
+  const { playSong, isPlaying, togglePlay, queue, currentSong, queueSource } =
+    usePlayer();
   const { currentUser } = useAuth();
-  
-  const [searchQuery, setSearchQuery] = useState('');
-  const [results, setResults] = useState([]); 
-  const [myFeed, setMyFeed] = useState([]); 
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [myFeed, setMyFeed] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [processingId, setProcessingId] = useState(null); // Used for loading state of Add/Remove
+  const [processingId, setProcessingId] = useState(null);
 
-  const [activeTab, setActiveTab] = useState('library');
+  const [activeTab, setActiveTab] = useState("you");
 
+  const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY;
+  const searchAbortRef = useRef(null);
+
+  // Auto-switch tab when queueSource changes (safer)
   useEffect(() => {
-    if (queue.length > 1) {
-        setActiveTab('queue');
+    if (!queueSource) return;
+    setActiveTab(queueSource === "You" ? "you" : "other");
+  }, [queueSource]);
+
+  // -------------------------
+  // Real-time myFeed (user's favourites)
+  // -------------------------
+  useEffect(() => {
+    if (!currentUser) {
+      setMyFeed([]);
+      return;
     }
-  }, [queue.length]);
 
-  const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY; 
+    const q = query(
+      collection(db, "users", currentUser.uid, "favourites"),
+      orderBy("createdAt", "desc")
+    );
 
-  // Fetch Library
-  useEffect(() => {
-    if (!currentUser) return;
-    const fetchFeed = async () => {
-      try {
-        const q = query(
-          collection(db, "users", currentUser.uid, "favourites"), 
-          orderBy("createdAt", "desc")
-        );
-        const snap = await getDocs(q);
-        const songs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const songs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         setMyFeed(songs);
-      } catch (error) {
-        console.error("Feed error:", error);
+      },
+      (err) => {
+        console.error("Feed snapshot error:", err);
       }
-    };
-    fetchFeed();
+    );
+
+    return () => unsub();
   }, [currentUser]);
 
+  // -------------------------
+  // Helper: make clean song / queue objects for PlayerContext
+  // -------------------------
+  const makeCleanSong = (s) => ({
+    youtubeId: s.youtubeId || s.id || s.videoId,
+    title: s.title || "",
+    thumbnail: s.thumbnail || null,
+    author: s.author || s.channelTitle || "",
+    id: s.id || s.youtubeId || null,
+  });
+
+  const makeCleanQueue = (arr) =>
+    arr.map((s) => ({
+      youtubeId: s.youtubeId || s.id || s.videoId,
+      title: s.title || "",
+      thumbnail: s.thumbnail || null,
+      author: s.author || s.channelTitle || "",
+      id: s.id || s.youtubeId || null,
+    }));
+
+  // -------------------------
+  // Search (triggered by form submit)
+  // -------------------------
   const handleSearch = async (e) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
+    e?.preventDefault();
+    const q = searchQuery?.trim();
+    if (!q) {
+      setResults([]);
+      setActiveTab(queue.length ? "other" : "you");
+      return;
+    }
+
+    if (!API_KEY) {
+      toast.error("Missing YouTube API key (VITE_YOUTUBE_API_KEY).");
+      return;
+    }
+
     setLoading(true);
+    setActiveTab("other");
     setResults([]);
+
+    // Abort previous if any
+    if (searchAbortRef.current) {
+      try {
+        searchAbortRef.current.abort();
+      } catch {}
+    }
+    searchAbortRef.current = new AbortController();
+
     try {
-      const response = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(searchQuery)}&type=video&key=${API_KEY}`
+      const resp = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=25&q=${encodeURIComponent(
+          q
+        )}&type=video&key=${API_KEY}`,
+        { signal: searchAbortRef.current.signal }
       );
-      if (!response.ok) throw new Error("API Limit");
-      const data = await response.json();
-      const formattedResults = data.items
-        .filter(item => item.id.videoId)
-        .map(item => ({
-          id: item.id.videoId,
-          title: item.snippet.title,
-          author: item.snippet.channelTitle,
-          thumbnail: item.snippet.thumbnails.default.url
-        }));
-      setResults(formattedResults);
-    } catch (error) {
-      setTimeout(() => {
-        setResults([
-          { id: "jfKfPfyJRdk", title: "lofi hip hop radio", author: "Lofi Girl", thumbnail: "https://img.youtube.com/vi/jfKfPfyJRdk/default.jpg" },
-        ]);
-      }, 500);
+
+      if (!resp.ok) {
+        throw new Error("YouTube API error");
+      }
+
+      const data = await resp.json();
+
+      const formatted = (data.items || [])
+        .filter((it) => it?.id?.videoId)
+        .map((it) => {
+          const thumb =
+            (it.snippet?.thumbnails?.medium &&
+              it.snippet.thumbnails.medium.url) ||
+            (it.snippet?.thumbnails?.high && it.snippet.thumbnails.high.url) ||
+            (it.snippet?.thumbnails?.default && it.snippet.thumbnails.default.url) ||
+            null;
+
+          return {
+            // use youtubeId as unique identifier for UI & processing
+            id: `yt-${it.id.videoId}`,
+            youtubeId: it.id.videoId,
+            title: it.snippet.title,
+            author: it.snippet.channelTitle,
+            thumbnail: thumb,
+          };
+        });
+
+      setResults(formatted);
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        console.error("Search failed:", err);
+        toast.error("Search failed");
+      }
+      setResults([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // --- ADD SONG ---
-  const addToLibrary = async (song) => {
-    setProcessingId(song.id);
-    const toastId = toast.loading("Adding...");
+  // -------------------------
+  // Add / Remove to Firestore
+  // processingId is tracked by youtubeId
+  // -------------------------
+  const addToLibrary = async (item) => {
+    if (!currentUser) return toast.error("Please login first");
+    const youtubeId = item.youtubeId || item.id;
+    if (!youtubeId) return;
+
+    setProcessingId(youtubeId);
+    const tId = toast.loading("Adding...");
+
     try {
-      // Create new doc
-      const docRef = await addDoc(collection(db, "users", currentUser.uid, "favourites"), {
-        youtubeId: song.id,
-        title: song.title,
-        thumbnail: song.thumbnail,
-        author: song.author,
-        createdAt: serverTimestamp()
-      });
-      
-      // Update local state immediately
-      setMyFeed(prev => [{...song, youtubeId: song.id, id: docRef.id, createdAt: new Date()}, ...prev]);
-      toast.success("Added to library", { id: toastId });
-    } catch (error) {
-      toast.error("Failed to add song", { id: toastId });
+      const ref = await addDoc(
+        collection(db, "users", currentUser.uid, "favourites"),
+        {
+          youtubeId: youtubeId,
+          title: item.title || "",
+          thumbnail: item.thumbnail || null,
+          author: item.author || "",
+          createdAt: serverTimestamp(),
+        }
+      );
+
+      // onSnapshot will update myFeed in realtime; but keep optimistic UI insertion
+      setMyFeed((prev) => [
+        {
+          id: ref.id,
+          youtubeId,
+          title: item.title || "",
+          thumbnail: item.thumbnail || null,
+          author: item.author || "",
+          createdAt: new Date(),
+        },
+        ...prev,
+      ]);
+
+      toast.success("Added", { id: tId });
+    } catch (err) {
+      console.error("Add failed:", err);
+      toast.error("Failed to add", { id: tId });
+    } finally {
+      setProcessingId(null);
     }
-    setProcessingId(null);
   };
 
-  // --- REMOVE SONG ---
-  const removeFromLibrary = async (songId, youtubeId) => {
-    // We need the Firestore Document ID to delete.
-    // If passed from Search Results, we might only have youtubeId, so we find the docId.
-    let docId = songId;
-    
-    if (!docId && youtubeId) {
-        const foundSong = myFeed.find(s => s.youtubeId === youtubeId);
-        if (foundSong) docId = foundSong.id;
+  const removeFromLibrary = async (docIdOrYoutubeId, youtubeIdIfAny) => {
+    if (!currentUser) return toast.error("Please login first");
+
+    // Accept either docId or youtubeId; prefer docId if looks like firestore id (no 'yt-' prefix)
+    let docId = docIdOrYoutubeId;
+    let youtubeId = youtubeIdIfAny || docIdOrYoutubeId;
+
+    // If passed a youtubeId (starts with yt- or length 11), try to find docId from myFeed
+    if (typeof docId === "string" && (docId.startsWith("yt-") || docId.length === 11)) {
+      youtubeId = docId;
+      const found = myFeed.find((s) => s.youtubeId === youtubeId || s.id === youtubeId);
+      docId = found?.id;
     }
 
-    if (!docId) return;
+    if (!docId) {
+      // nothing to delete
+      toast.error("Item not found");
+      return;
+    }
 
-    setProcessingId(docId); // Show loading
-    const toastId = toast.loading("Removing...");
-    
+    setProcessingId(youtubeId || docId);
     try {
-        await deleteDoc(doc(db, "users", currentUser.uid, "favourites", docId));
-        
-        // Remove from local state
-        setMyFeed(prev => prev.filter(s => s.id !== docId));
-        toast.success("Removed from library", { id: toastId });
-    } catch (error) {
-        console.error(error);
-        toast.error("Failed to remove", { id: toastId });
+      await deleteDoc(doc(db, "users", currentUser.uid, "favourites", docId));
+      setMyFeed((prev) => prev.filter((s) => s.id !== docId));
+      toast.success("Removed");
+    } catch (err) {
+      console.error("Remove failed:", err);
+      toast.error("Failed to remove");
+    } finally {
+      setProcessingId(null);
     }
-    setProcessingId(null);
   };
 
   const clearSearch = () => {
-    setSearchQuery('');
+    setSearchQuery("");
     setResults([]);
+    // Keep active tab as-is (we don't force-switch)
   };
 
-  const getFirstName = () => currentUser?.displayName ? currentUser.displayName.split(' ')[0] : 'Soul';
+  const getFirstName = () =>
+    currentUser?.displayName?.split?.(" ")?.[0] || "User";
 
-  const displayList = activeTab === 'queue' ? queue : myFeed;
+  const getSecondTabLabel = () => {
+    if (searchQuery) return "Results";
+    if (queueSource && queueSource !== "You") return queueSource;
+    return "Search";
+  };
 
+  // -------------------------
+  // Helpers for rendering state
+  // -------------------------
+  const isAlreadyAdded = (youtubeId) =>
+    myFeed.some((s) => s.youtubeId === youtubeId);
+
+  // -------------------------
+  // JSX
+  // -------------------------
   return (
-    <div className="h-full flex flex-col bg-white">
-      
+    <div className="h-full flex flex-col bg-white text-black">
       {/* HEADER */}
-      <div className="shrink-0 p-4 md:p-8 pb-2 z-10 bg-white border-b border-gray-50">
-        <div className="max-w-4xl mx-auto flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-black">
-              Hi, {getFirstName()} 👋
-            </h1>
-            
-            <div className="flex bg-gray-100 p-1 rounded-full">
-                <button 
-                    onClick={() => setActiveTab('library')}
-                    className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold transition-all ${activeTab === 'library' ? 'bg-white text-black shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
-                >
-                    <User size={14} /> Library
-                </button>
-                <button 
-                    onClick={() => setActiveTab('queue')}
-                    disabled={queue.length === 0}
-                    className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold transition-all ${activeTab === 'queue' ? 'bg-white text-black shadow-sm' : 'text-gray-400 hover:text-gray-600 disabled:opacity-30'}`}
-                >
-                    <ListMusic size={14} /> Now Playing
-                </button>
-            </div>
-          </div>
+      <div className="shrink-0 p-4 z-10 bg-white border-b border-gray-50 flex flex-col gap-4">
+        <h1 className="text-2xl font-bold tracking-tight">Hi, {getFirstName()} 👋</h1>
 
-          <form onSubmit={handleSearch} className="relative w-full">
-            <input 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search songs..." 
-              className="w-full bg-gray-100 border-none text-black pl-10 pr-10 py-3 rounded-xl outline-none focus:bg-white focus:ring-1 focus:ring-black transition-all text-sm font-medium"
-            />
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-            {searchQuery && (
-              <button type="button" onClick={clearSearch} className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-black">
-                <X size={16} />
-              </button>
-            )}
-          </form>
+        <form onSubmit={handleSearch} className="relative w-full">
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search songs..."
+            className="w-full bg-gray-50 border border-gray-100 text-black pl-10 pr-10 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-black/5 transition-all text-sm font-medium placeholder:text-gray-400"
+          />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={clearSearch}
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-black"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </form>
+
+        <div className="flex items-center justify-center bg-gray-100 p-1 rounded-full w-fit mx-auto transition-all">
+          <button
+            onClick={() => setActiveTab("you")}
+            className={`flex items-center gap-2 px-8 py-2 rounded-full text-sm font-bold transition-all ${
+              activeTab === "you" ? "bg-black text-white shadow-md" : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            You
+          </button>
+          <button
+            onClick={() => setActiveTab("other")}
+            className={`flex items-center gap-2 px-8 py-2 rounded-full text-sm font-bold transition-all ${
+              activeTab === "other" ? "bg-black text-white shadow-md" : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            {getSecondTabLabel()}
+          </button>
         </div>
       </div>
 
       {/* CONTENT */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-8 pt-2">
+      <div className="flex-1 overflow-y-auto p-4">
         <div className="max-w-4xl mx-auto pb-24">
-            
-            {/* SEARCH RESULTS */}
-            {(loading || results.length > 0) && (
-                <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-8">
-                <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
-                    <span className="text-xs font-bold uppercase text-gray-500">Search Results</span>
-                    <button onClick={clearSearch} className="text-xs font-bold text-red-500">CLOSE</button>
-                </div>
-                <div className="divide-y divide-gray-50">
-                    {results.map((item) => {
-                    // Check if song is already in library
-                    const isAlreadyAdded = myFeed.some(song => song.youtubeId === item.id);
-                    // Find Firestore ID if added
-                    const firestoreId = isAlreadyAdded ? myFeed.find(s => s.youtubeId === item.id)?.id : null;
+          {/* TAB: other (Search Results OR External Queue) */}
+          {activeTab === "other" && (
+            <div className="space-y-2 animate-fade-in">
+              {/* CASE A: Search Results */}
+              {searchQuery ? (
+                <>
+                  {loading && <div className="text-center py-10 text-gray-400">Searching...</div>}
+                  {!loading && results.length === 0 && <div className="text-center py-10 text-gray-400 text-sm">No results found.</div>}
+
+                  {results.map((item) => {
+                    const youtubeId = item.youtubeId;
+                    const already = isAlreadyAdded(youtubeId);
+                    const isCurrent = currentSong?.youtubeId === youtubeId;
 
                     return (
-                        <div key={item.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 cursor-pointer group" onClick={() => playSong({ youtubeId: item.id, ...item })}>
-                            <div className="relative w-12 h-12 shrink-0 rounded bg-gray-200 overflow-hidden">
-                                <img src={item.thumbnail} className="w-full h-full object-cover" />
-                                <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 group-hover:opacity-100"><Play size={14} fill="white" className="text-white"/></div>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <h3 className="font-medium text-sm text-gray-900 truncate" dangerouslySetInnerHTML={{__html: item.title}} />
-                                <p className="text-xs text-gray-500 truncate">{item.author}</p>
-                            </div>
-                            
-                            {/* TOGGLE ADD/REMOVE BUTTON */}
-                            <button 
-                                onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    if(isAlreadyAdded) removeFromLibrary(firestoreId, item.id);
-                                    else addToLibrary(item);
-                                }}
-                                disabled={processingId === item.id || processingId === firestoreId}
-                                className={`shrink-0 text-xs px-3 py-1.5 rounded-full flex items-center gap-1 transition-all ${
-                                    isAlreadyAdded 
-                                    ? "bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-600 font-bold" 
-                                    : "bg-black text-white hover:opacity-80"
-                                }`}
-                            >
-                                {isAlreadyAdded ? (
-                                    // Hover pe text change karna complex hai React me bina extra state ke, 
-                                    // to simply Added dikhate hai, click pe remove hoga.
-                                    <><Check size={12}/> ADDED</>
-                                ) : (
-                                    (processingId === item.id) ? "..." : "ADD"
-                                )}
-                            </button>
+                      <div
+                        key={youtubeId}
+                        className={`flex items-center justify-between p-3 rounded-xl cursor-pointer group transition-colors ${isCurrent ? "bg-gray-100 border border-gray-200" : "hover:bg-gray-50"}`}
+                        onClick={() => {
+                          const cleanSong = makeCleanSong(item);
+                          const cleanQueue = makeCleanQueue(results);
+                          if (isCurrent) togglePlay();
+                          else playSong(cleanSong, cleanQueue, "Search");
+                        }}
+                      >
+                        <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
+                          <div className="relative w-12 h-12 shrink-0 rounded-lg overflow-hidden bg-gray-200">
+                            <img
+                              src={item.thumbnail || "/fallback.jpg"}
+                              onError={(e) => (e.target.src = "/fallback.jpg")}
+                              className="w-full h-full object-cover"
+                              alt={item.title || "thumbnail"}
+                            />
+                            {isCurrent && isPlaying ? (
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                                <Pause size={16} />
+                              </div>
+                            ) : (
+                              <div className="absolute inset-0 bg-black/10 flex items-center justify-center opacity-0 group-hover:opacity-100">
+                                <Play size={16} />
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <h3 className={`font-bold text-sm truncate ${isCurrent ? "text-black" : "text-gray-900"}`} dangerouslySetInnerHTML={{ __html: item.title }} />
+                            <p className="text-xs text-gray-500 truncate">{item.author}</p>
+                          </div>
                         </div>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const yt = item.youtubeId;
+                            if (already) {
+                              // find doc id from myFeed
+                              const found = myFeed.find((s) => s.youtubeId === yt);
+                              removeFromLibrary(found?.id || yt, yt);
+                            } else {
+                              addToLibrary(item);
+                            }
+                          }}
+                          disabled={processingId === item.youtubeId}
+                          className={`shrink-0 text-xs px-4 py-1.5 rounded-full flex items-center gap-1 transition-all ${already ? "bg-gray-100 text-black font-bold border border-gray-200" : "bg-black text-white hover:opacity-80"}`}
+                        >
+                          {already ? <Check size={14} /> : (processingId === item.youtubeId ? "..." : "ADD")}
+                        </button>
+                      </div>
                     );
-                    })}
-                </div>
-                </div>
-            )}
-
-            {/* LIST: LIBRARY OR QUEUE */}
-            {!loading && results.length === 0 && (
-                <div className="space-y-2">
-                    <div className="flex items-center justify-between px-2 mb-2">
-                        <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
-                            {activeTab === 'queue' ? 'Current Queue' : 'Your Collection'}
-                        </h2>
-                        {activeTab === 'queue' && (
-                            <span className="text-xs text-black font-medium bg-gray-100 px-2 py-0.5 rounded">Playing from World</span>
-                        )}
+                  })}
+                </>
+              ) : (
+                // CASE B: Current Queue listing
+                <div className=" divide-gray-50">
+                  {queue.length > 0 ? (
+                    <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 mt-2 px-2">
+                      Current Queue: {queueSource || "Unknown"}
                     </div>
-
-                    <div className="divide-y divide-gray-50 border-t border-gray-100">
-
-                        {displayList.map((song, index) => {
-                            const isCurrent = currentSong?.youtubeId === song.youtubeId;
-                            
-                            return (
-                                <div 
-                                    key={`${song.id}-${index}`} 
-                                    onClick={() => playSong(song, displayList)} 
-                                    className={`flex items-center gap-3 p-3 hover:bg-gray-50 cursor-pointer group rounded-xl transition-all ${isCurrent ? 'bg-purple-50 hover:bg-purple-100' : ''}`}
-                                >
-                                    <span className={`hidden md:block w-6 text-center text-xs font-medium group-hover:hidden ${isCurrent ? 'text-purple-600' : 'text-gray-400'}`}>
-                                        {isCurrent ? <ListMusic size={14}/> : index + 1}
-                                    </span>
-                                    <div className="hidden md:group-hover:flex w-6 justify-center"><Play size={14} className="text-black" fill="black"/></div>
-                                    
-                                    <div className="relative w-12 h-12 shrink-0 rounded overflow-hidden bg-gray-200">
-                                        <img src={song.thumbnail} className="w-full h-full object-cover" />
-                                    </div>
-                                    
-                                    <div className="flex-1 min-w-0">
-                                        <h3 className={`font-medium text-sm truncate ${isCurrent ? 'text-purple-700 font-bold' : 'text-gray-900'}`} dangerouslySetInnerHTML={{__html: song.title}} />
-                                        <p className="text-xs text-gray-500 truncate">{song.author}</p>
-                                    </div>
-
-                                    {/* ACTIONS AREA */}
-                                    <div className="flex items-center gap-2">
-                                        {isCurrent && (
-                                            <div className="flex gap-0.5 items-end h-3 mr-2">
-                                                <div className="w-0.5 bg-purple-500 animate-[bounce_1s_infinite] h-2"></div>
-                                                <div className="w-0.5 bg-purple-500 animate-[bounce_1.2s_infinite] h-3"></div>
-                                                <div className="w-0.5 bg-purple-500 animate-[bounce_0.8s_infinite] h-1.5"></div>
-                                            </div>
-                                        )}
-
-                                        {/* DELETE BUTTON (Only in Library Tab) */}
-                                        {activeTab === 'library' && (
-                                            <button 
-                                                onClick={(e) => { 
-                                                    e.stopPropagation(); 
-                                                    removeFromLibrary(song.id, song.youtubeId); 
-                                                }}
-                                                className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
-                                            >
-                                                <Trash2 size={16} />
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })}
-
-                        {displayList.length === 0 && (
-                            <div className="py-10 text-center text-gray-400 text-sm">
-                                {activeTab === 'library' ? "Start adding songs!" : "Queue is empty."}
-                            </div>
-                        )}
+                  ) : (
+                    <div className="text-center py-20 text-gray-400 text-sm">
+                      Type above to search for new music.
                     </div>
+                  )}
+
+                  {queue.map((song, index) => {
+                    const isCurrent = currentSong?.youtubeId === song.youtubeId;
+                    const yt = song.youtubeId || song.id;
+                    return (
+                      <div
+                        key={yt || index}
+                        onClick={() => {
+                          const cleanSong = makeCleanSong(song);
+                          const cleanQueue = makeCleanQueue(queue);
+                          if (isCurrent) togglePlay();
+                          else playSong(cleanSong, cleanQueue, queueSource || "Queue");
+                        }}
+                        className={`flex items-center justify-between p-3 rounded-xl group transition-colors cursor-pointer w-full ${isCurrent ? "bg-gray-100 border border-gray-200" : "hover:bg-gray-50"}`}
+                      >
+                        <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
+                          <div className="w-10 h-10 bg-gray-200 rounded-lg overflow-hidden shrink-0 relative">
+                            <img src={song.thumbnail || "/fallback.jpg"} onError={(e) => (e.target.src = "/fallback.jpg")} className="w-full h-full object-cover" alt="" />
+                            {isCurrent && isPlaying && <div className="absolute inset-0 bg-black/10 flex items-center justify-center"></div>}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <h3 className={`font-bold text-sm truncate ${isCurrent ? "text-black" : "text-gray-900"}`} dangerouslySetInnerHTML={{ __html: song.title }} />
+                            <p className="text-xs text-gray-500 truncate">{song.author}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button className={`shrink-0 w-8 h-8 rounded-full border flex items-center justify-center transition-all ${isCurrent ? "bg-black border-black text-white" : "border-gray-200 text-black opacity-0 group-hover:opacity-100 hover:bg-black hover:text-white hover:border-black"}`}>
+                            {isCurrent && isPlaying ? <Pause size={14} /> : <Play size={14} />}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-            )}
+              )}
+            </div>
+          )}
+
+          {/* TAB: you (My Collection) */}
+          {activeTab === "you" && (
+            <div className="space-y-2 animate-fade-in">
+              {myFeed.length === 0 ? (
+                <div className="py-20 text-center text-gray-400 text-sm">
+                  Your collection is empty. Switch tab to search!
+                </div>
+              ) : (
+                <div className="divide-y divide-gray-50 border-t border-gray-100">
+                  {myFeed.map((song, index) => {
+                    const isCurrent = currentSong?.youtubeId === song.youtubeId;
+                    const yt = song.youtubeId || song.id || `${index}`;
+
+                    return (
+                      <div
+                        key={song.id || yt}
+                        onClick={() => {
+                          const cleanSong = makeCleanSong(song);
+                          const cleanQueue = makeCleanQueue(myFeed);
+                          if (isCurrent) togglePlay();
+                          else playSong(cleanSong, cleanQueue, "You");
+                        }}
+                        className={`flex items-center justify-between p-3 rounded-xl group transition-colors cursor-pointer w-full ${isCurrent ? "bg-gray-100 border border-gray-200" : "hover:bg-gray-50"}`}
+                      >
+                        <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
+                          <div className="w-10 h-10 bg-gray-200 rounded-lg overflow-hidden shrink-0 relative">
+                            <img src={song.thumbnail || "/fallback.jpg"} onError={(e) => (e.target.src = "/fallback.jpg")} className="w-full h-full object-cover" alt="" />
+                            {isCurrent && isPlaying && <div className="absolute inset-0 bg-black/10 flex items-center justify-center"></div>}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <h3 className={`font-bold text-sm truncate ${isCurrent ? "text-black" : "text-gray-900"}`} dangerouslySetInnerHTML={{ __html: song.title }} />
+                            <p className="text-xs text-gray-500 truncate">{song.author}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeFromLibrary(song.id, song.youtubeId);
+                            }}
+                            className="p-2 text-gray-400 hover:text-red-500 rounded-full transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

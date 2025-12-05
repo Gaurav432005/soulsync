@@ -9,25 +9,23 @@ const Layout = () => {
   const { currentSong } = usePlayer();
 
   return (
-    <div className="flex h-screen bg-white text-black font-sans overflow-hidden">
+
+    <div className="flex h-[100dvh] bg-white text-black font-sans overflow-hidden">
+      
       <Sidebar />
       
-      {/* Change: h-screen & overflow-hidden 
-         Mobile Nav Height approx 60px padding adjust
-      */}
-      <main className="flex-1 flex flex-col w-full h-full relative">
-        <div className="flex-1 overflow-hidden relative">
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col w-full h-full relative min-w-0">
+
+        <div className="flex-1 h-full relative flex flex-col overflow-hidden">
            <Outlet />
         </div>
-        
-        {/* Spacer for Mobile Nav / Player */}
-        <div className={`shrink-0 ${currentSong ? 'h-[140px]' : 'h-[60px]'} md:h-0`} />
       </main>
       
       <MobileNav />
       
       {currentSong && (
-        <div className="fixed bottom-[56px] md:bottom-0 left-0 md:left-64 right-0 z-50">
+        <div className="z-50"> 
           <MusicPlayer />
         </div>
       )}

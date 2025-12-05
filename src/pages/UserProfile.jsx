@@ -1,127 +1,106 @@
-import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
+import { LogOut, UserPen } from 'lucide-react';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { Camera, Edit2, Save, Loader2, LogOut } from 'lucide-react';
 import Avatar from '../components/Avatar';
-import { toast } from 'react-hot-toast';
-import { compressImage } from '../utils/helpers';
 
 const UserProfile = () => {
   const { userId } = useParams();
-  const { currentUser, logout } = useAuth(); // Get logout function
-  const [profile, setProfile] = useState(null);
-  const [isEditing, setIsEditing] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [uploading, setUploading] = useState(false);
-  
-  const isOwnProfile = currentUser?.uid === userId;
+  const { currentUser, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const [songCount, setSongCount] = useState(0);
+
+  const isOwner = currentUser?.uid === userId;
 
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const docSnap = await getDoc(doc(db, "users", userId));
-        if (docSnap.exists()) {
-          setProfile(docSnap.data());
-          setNewName(docSnap.data().displayName);
-        } else {
-            toast.error("User not found");
-        }
-      } catch (e) {
-        console.error(e);
+    if (!userId) return;
+
+    // Collection reference → Correct way: collection(db, "users", userId, "favourites")
+    const favRef = collection(db, "users", userId, "favourites");
+
+    const q = query(favRef, orderBy("createdAt", "desc"));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setSongCount(snapshot.size);
+      },
+      (error) => {
+        console.error("Snapshot Error:", error);
       }
-    };
-    if (userId) fetchProfile();
+    );
+
+    return unsubscribe;
   }, [userId]);
 
-  const handleImageUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setUploading(true);
+  const handleLogout = async () => {
     try {
-      const compressedBase64 = await compressImage(file);
-      await updateDoc(doc(db, "users", userId), { photoURL: compressedBase64 });
-      setProfile(prev => ({ ...prev, photoURL: compressedBase64 }));
-      toast.success("Profile updated");
+      await logout();
+      navigate("/login");
     } catch (error) {
-      console.error(error);
-      toast.error("Image upload failed");
-    } finally {
-      setUploading(false);
+      console.error("Failed to log out", error);
     }
   };
-
-  const saveProfile = async () => {
-    if (!newName.trim()) return;
-    try {
-        await updateDoc(doc(db, "users", userId), { displayName: newName });
-        setProfile(prev => ({ ...prev, displayName: newName }));
-        setIsEditing(false);
-        toast.success("Name updated");
-    } catch (e) {
-        toast.error("Failed to update name");
-    }
-  };
-
-  if (!profile) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin"/></div>;
 
   return (
-    <div className="max-w-2xl mx-auto p-6 md:p-12 space-y-8 pb-32">
-      <h1 className="text-3xl font-bold">Profile Settings</h1>
-      
-      <div className="flex flex-col items-center border-b border-gray-100 pb-8 gap-6">
-        {/* Avatar Section */}
-        <div className="relative group">
-          <Avatar user={profile} size="lg" />
-          {isOwnProfile && (
-            <label className={`absolute bottom-0 right-0 bg-black text-white p-2 rounded-full cursor-pointer hover:bg-gray-800 transition-colors shadow-lg ${uploading ? 'opacity-50 cursor-not-allowed' : ''}`}>
-              {uploading ? <Loader2 size={18} className="animate-spin"/> : <Camera size={18} />}
-              <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={uploading} />
-            </label>
+    <div className="h-full flex flex-col bg-white">
+
+      {/* Header */}
+      <div className="px-6 py-6 border-b border-gray-100 flex gap-3 items-center">
+        <UserPen size={24} className="text-black" />
+        <h1 className="text-xl font-bold">Profile</h1>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto px-6 py-10">
+
+        <div className="flex flex-col items-center">
+          
+          {/* Avatar */}
+          <div className="mb-6">
+            <div className="w-28 h-28 rounded-full border-2 border-gray-100 shadow-sm flex items-center justify-center overflow-hidden bg-white">
+              <Avatar
+                user={isOwner ? currentUser : { displayName: "User" }}
+                size="lg"
+              />
+            </div>
+          </div>
+
+          {/* Name */}
+          <h2 className="text-2xl font-bold text-gray-900 mb-1">
+            {isOwner ? currentUser?.displayName || "User" : "User"}
+          </h2>
+
+          {/* Email */}
+          {isOwner && (
+            <p className="text-sm text-gray-500 mb-6">
+              {currentUser?.email}
+            </p>
+          )}
+
+          {/* Stats */}
+          <div className="bg-gray-50 px-8 py-4 rounded-2xl border border-gray-100 mb-8 flex flex-col items-center">
+            <span className="text-3xl font-bold text-black">{songCount}</span>
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+              Songs Added
+            </span>
+          </div>
+
+          {/* Logout Button */}
+          {isOwner && (
+            <button
+              onClick={handleLogout}
+              className="flex items-center justify-center gap-2 px-6 py-3 bg-red-50 text-red-600 rounded-xl text-sm font-semibold hover:bg-red-100 transition-colors w-full max-w-[200px]"
+            >
+              <LogOut size={18} /> Logout
+            </button>
           )}
         </div>
 
-        {/* Name Section */}
-        <div className="text-center w-full max-w-sm space-y-2">
-          {isEditing ? (
-            <div className="flex gap-2">
-              <input 
-                value={newName} 
-                onChange={e => setNewName(e.target.value)}
-                className="w-full border p-2 rounded-lg text-center font-bold text-xl outline-none ring-2 ring-purple-100"
-                autoFocus
-              />
-              <button onClick={saveProfile} className="bg-black text-white p-2 rounded-lg"><Save size={20}/></button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-center gap-2">
-              <h2 className="text-2xl font-bold">{profile.displayName}</h2>
-              {isOwnProfile && (
-                <button onClick={() => setIsEditing(true)} className="text-gray-400 hover:text-black">
-                  <Edit2 size={16} />
-                </button>
-              )}
-            </div>
-          )}
-          <p className="text-gray-500">{profile.email}</p>
-        </div>
       </div>
-      
-      {/* Account Actions (Only visible on own profile) */}
-      {isOwnProfile && (
-        <div className="pt-4">
-            <h3 className="font-semibold text-lg mb-4 text-gray-900">Account</h3>
-            <button 
-                onClick={logout}
-                className="flex items-center justify-center gap-2 px-4 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-xl font-medium transition-colors"
-            >
-                <LogOut size={20} />
-                Log Out
-            </button>
-        </div>
-      )}
     </div>
   );
 };

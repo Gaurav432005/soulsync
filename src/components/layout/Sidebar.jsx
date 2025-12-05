@@ -1,15 +1,16 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Home, Globe, User, Disc } from 'lucide-react';
+import { Home, Globe, User, Disc, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-
 const Sidebar = () => {
   const { currentUser } = useAuth(); // Logout function not needed here anymore
 
   const navItems = [
     { icon: Home, label: "Home", path: "/" },
+    { icon: Users, label: "Friends", path: "/friends" },
     { icon: Globe, label: "World", path: "/world" },
     { icon: User, label: "My Profile", path: `/profile/${currentUser?.uid}` },
+
   ];
 
   return (
